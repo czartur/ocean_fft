@@ -6,13 +6,15 @@ using namespace cgp;
 #define RESOLUTION 256 // must be 2^k
 #define WORK_GROUP_DIM 16 // NE PAS CHANGER !!
 
-#define PI 3.14159265359f
+const float PI = 3.14159265359f;
 
 const int ocean_size = 512;
 const int amplitude = 40;
 const float scale = 0.15;
 const int NUM_PATCHES = 5; // odd
-const float sea_length = scale*ocean_size;
+const float ocean_length = scale*ocean_size;
+const float ocean_height = -2.0;
+
 
 void scene_structure::initialize()
 {
@@ -38,7 +40,6 @@ void scene_structure::initialize()
 		project::path + "shaders/ocean/ocean.frag.glsl"
 	);
 
- 
 	// TEXTURES
 	// initial spectrum
 	spectrum_0_image.initialize_texture_2d_on_gpu(RESOLUTION, RESOLUTION, GL_RGBA32F, GL_TEXTURE_2D, GL_REPEAT, GL_REPEAT, GL_NEAREST, GL_NEAREST);
@@ -55,28 +56,20 @@ void scene_structure::initialize()
 	
 	// WATER MESH
 	// High Quality
-	float sea_heiht = -2.0;
-	float sea_l = sea_length/2.0;
-	mesh sea_grid = mesh_primitive_grid({ -sea_l,-sea_l,0 }, { sea_l,-sea_l,0 }, { sea_l,sea_l,0 }, { -sea_l,sea_l,0 }, RESOLUTION, RESOLUTION);
-	sea_grid.apply_rotation_to_position(vec3(1,0,0), PI/2.f).apply_translation_to_position(vec3(0,sea_heiht,0));
-	sea_grid.apply_translation_to_position(vec3(sea_l, 0, sea_l));
+	mesh sea_grid = mesh_primitive_grid({ 0, ocean_height, 0 }, { ocean_length, ocean_height, 0 }, { ocean_length, ocean_height, ocean_length }, { 0, ocean_height, ocean_length }, RESOLUTION, RESOLUTION);
 
 	water.initialize_data_on_gpu(sea_grid);
 	water.shader = ocean;
 	water.supplementary_texture["u_normal_map"] =  normal_image;
 	water.supplementary_texture["u_displacement_map"] = displacement_image;
-	// water.material.texture_settings.two_sided = true;
 	
 	// Low Quality
-	sea_grid = mesh_primitive_grid({ -sea_l,-sea_l,0 }, { sea_l,-sea_l,0 }, { sea_l,sea_l,0 }, { -sea_l,sea_l,0 }, RESOLUTION/2, RESOLUTION/2);
-	sea_grid.apply_rotation_to_position(vec3(1,0,0), PI/2.f).apply_translation_to_position(vec3(0,sea_heiht,0));
-	sea_grid.apply_translation_to_position(vec3(sea_l, 0, sea_l));
+	mesh sea_grid_lq = mesh_primitive_grid({ 0, ocean_height, 0 }, { ocean_length, ocean_height, 0 }, { ocean_length, ocean_height, ocean_length }, { 0, ocean_height, ocean_length }, RESOLUTION/2, RESOLUTION/2);
 
-	water_lq.initialize_data_on_gpu(sea_grid);
+	water_lq.initialize_data_on_gpu(sea_grid_lq);
 	water_lq.shader = ocean;
 	water_lq.supplementary_texture["u_normal_map"] =  normal_image;
 	water_lq.supplementary_texture["u_displacement_map"] = displacement_image;
-	// water_lq.material.texture_settings.two_sided = true;
 
 	// Patch location of neighbors
 	for(int i = -NUM_PATCHES/2; i <= NUM_PATCHES/2; ++i){
@@ -107,17 +100,20 @@ void scene_structure::display_frame()
 {
 	timer.update();
 
-	// rendering ocean maps...
+	// when some gui parameters change (or at program start), we randomly generate the initial spectrum
 	if (compute_initial_spectrum)
 	{
-		// timer.t = 0;
 		initial_spectrum();
 		compute_initial_spectrum = false;
 	}
- 
-	spectrum_update(); 
+
+	// generate time varying spectrum from initial spectrum
+	spectrum_update();
+
+	// reorder spectrum texture (just for printing it in the screen, not necessary to generate the ocean)
 	texture_ordering(dy_image, spectrum_t_image);
 
+	// where the magic happpens :)
 	fft(fft_vertical, dy_image);
 	fft(fft_horizontal, dy_image);
 	fft(fft_horizontal, dx_image);
@@ -125,6 +121,7 @@ void scene_structure::display_frame()
 	fft(fft_horizontal, dz_image);
 	fft(fft_vertical, dz_image);
 
+	// save normal and displacement maps to textures
  	normal_update();
 	
 	
@@ -132,24 +129,24 @@ void scene_structure::display_frame()
 	
 	// DRAW SUN (+ day night cycle)
 	if(gui.dn_cycle){
-		float rad = NUM_PATCHES/2.0 * sea_length;
+		float rad = NUM_PATCHES/2.0 * ocean_length;
 		sun.model.translation = vec3(player_position.x + rad*cos(timer.t*0.1), rad*sin(timer.t*0.1) - 20.0, player_position.z);
 
 		environment.light = sun.model.translation;
 		environment.background_color = vec3(157.0,221.0,237.0)/256.0 * (std::max(0.1, sin(timer.t * 0.1)));
 
-		// lil optimization
+		// only draws if above water
 		if(sun.model.translation.y >= water.model.translation.y-2.0)
 			draw(sun, environment);
 	}
 
 
-	// DRAW OCEAN
+	// DRAW OCEAN (chunk model + fov culling + "simplistic" tesselation)
 	input.uniform_int["u_resolution"] = RESOLUTION;
 	input.uniform_vec3["u_bg_color"] = environment.background_color;
 	input.uniform_float["u_fog_dmax"] = gui.fog_dmax;
 
-	vec3 player_u0v = vec3(std::floor(player_position.x/sea_length), 0, std::floor(player_position.z/sea_length));
+	vec3 player_u0v = vec3(std::floor(player_position.x/ocean_length), 0, std::floor(player_position.z/ocean_length));
 	float fov = camera_projection.field_of_view;	 
 	float cosphi = -environment.camera_view[0][0];
 	float sinphi = environment.camera_view[0][2];
@@ -160,20 +157,20 @@ void scene_structure::display_frame()
 	vec2 view_cone_dir = normalize(vec2(sinphi, cosphi));
 	vec2 view_point_dir = normalize(vec2(-player_position.x, -player_position.z));
 
-	for(auto neigh : neighbors){
-		vec3 corner = (player_u0v + neigh)*sea_length;
-		view_point_dir = normalize(vec2(corner.x + sea_length/2.0 - player_position.x, corner.z + sea_length/2.0 - player_position.z));
-		if(dot(view_cone_dir, view_point_dir) > cosfov) goto draw; 
+	for(auto neigh : neighbors){ // chunk model
+		vec3 corner = (player_u0v + neigh)*ocean_length;
+		view_point_dir = normalize(vec2(corner.x + ocean_length/2.0 - player_position.x, corner.z + ocean_length/2.0 - player_position.z));
+		if(dot(view_cone_dir, view_point_dir) > cosfov) goto draw; // fov culling
 		for(int i = 0; i < 2; ++i){
 			for(int j = 0; j < 2; ++j){
-				view_point_dir = normalize(vec2(corner.x + i*sea_length - player_position.x, corner.z + j*sea_length - player_position.z));
+				view_point_dir = normalize(vec2(corner.x + i*ocean_length - player_position.x, corner.z + j*ocean_length - player_position.z));
 				if(dot(view_cone_dir, view_point_dir) > cosfov) goto draw;
 			}
 		}
 		continue;
 		
 		draw:
-		auto &agua = std::max(neigh.x, neigh.y) >= 2 || std::min(neigh.x, neigh.z) <= -2 ?  water_lq : water;
+		auto &agua = std::max(neigh.x, neigh.y) >= 2 || std::min(neigh.x, neigh.z) <= -2 ?  water_lq : water; // tesselation
 		agua.model.translation = corner;
 		draw(agua, environment, 1, true, input);
 		if(gui.display_wireframe) draw_wireframe(agua, environment);

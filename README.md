@@ -123,9 +123,11 @@ The procedure described above generates a single water quad. To make it infinite
 </p>
 
 
-* As an optimization, we use a chunk model (thanks to [Guile Vieira](https://github.com/guilevieiram) for the idea) to render only a few of these patches (currently 25) based both on camera position and field of view.
+As an optimization, we use a chunk model (thanks to [Guile Vieira](https://github.com/guilevieiram) for the idea) to render only a few of these patches (currently 25) based both on camera position and field of view:
 
-* We also reduce the mesh resolution of patches far away from the camera since we don't need too much details there (simplistic tesselation). 
+* We reduce the mesh resolution of patches far away from the camera since we don't need too much details there (simplistic tesselation). 
+
+* Additionally, patches outside of the field of view are not rendered.
 
 ## Fog on the horizon ☁️
 A "mist"(fog) effect can be achieved by attenuating the color of the fragment according to its depth. A fragment close to the camera will have a phong illumination, while a distant fragment will tend towards the color of the mist.
